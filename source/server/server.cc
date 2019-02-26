@@ -171,7 +171,7 @@ InstanceUtil::loadBootstrapConfig(envoy::config::bootstrap::v2::Bootstrap& boots
     throw EnvoyException("V1 config (detected) with --config-yaml is not supported");
   }
   Json::ObjectSharedPtr config_json = Json::Factory::loadFromFile(options.configPath());
-  Config::BootstrapJson::translateBootstrap(*config_json, bootstrap);
+  Config::BootstrapJson::translateBootstrap(*config_json, bootstrap, options.statsOptions());
   MessageUtil::validate(bootstrap);
   return BootstrapVersion::V1;
 }
@@ -289,7 +289,8 @@ void InstanceImpl::initialize(Options& options,
         bootstrap_.node(), stats(),
         Config::Utility::factoryForGrpcApiConfigSource(*async_client_manager_, hds_config, stats())
             ->create(),
-        dispatcher()));
+        dispatcher(), runtime(), stats(), sslContextManager(), secretManager(), random(),
+        info_factory_, access_log_manager_));
   }
 
   for (Stats::SinkPtr& sink : main_config->statsSinks()) {

@@ -5,6 +5,7 @@
 #include "envoy/config/metrics/v2/stats.pb.h"
 #include "envoy/stats/stats_macros.h"
 
+#include "common/common/hex.h"
 #include "common/config/well_known_names.h"
 #include "common/stats/stats_impl.h"
 
@@ -63,6 +64,16 @@ TEST(StatsIsolatedStoreImplTest, All) {
 
   EXPECT_EQ(4UL, store.counters().size());
   EXPECT_EQ(2UL, store.gauges().size());
+}
+
+TEST(StatsIsolatedStoreImplTest, LongStatName) {
+  IsolatedStoreImpl store;
+  Stats::StatsOptionsImpl stats_options;
+  const std::string long_string(stats_options.maxNameLength() + 1, 'A');
+
+  ScopePtr scope = store.createScope("scope.");
+  Counter& counter = scope->counter(long_string);
+  EXPECT_EQ(absl::StrCat("scope.", long_string), counter.name());
 }
 
 /**
@@ -477,22 +488,26 @@ TEST(TagProducerTest, CheckConstructor) {
       "No regex specified for tag specifier and no default regex for name: 'test_extractor'");
 }
 
-// Validate truncation behavior of RawStatData.
-TEST(RawStatDataTest, Truncate) {
-  HeapRawStatDataAllocator alloc;
-  const std::string long_string(RawStatData::maxNameLength() + 1, 'A');
-  RawStatData* stat{};
-  EXPECT_LOG_CONTAINS("warning", "is too long with", stat = alloc.alloc(long_string));
+// No truncation occurs in the implementation of HeapStatData.
+TEST(RawStatDataTest, HeapNoTruncate) {
+  Stats::StatsOptionsImpl stats_options;
+  HeapStatDataAllocator alloc; //(/*stats_options*/);
+  const std::string long_string(stats_options.maxNameLength() + 1, 'A');
+  HeapStatData* stat{};
+  EXPECT_NO_LOGS(stat = alloc.alloc(long_string));
+  EXPECT_EQ(stat->key(), long_string);
   alloc.free(*stat);
 }
 
+// Note: a similar test using RawStatData* is in test/server/hot_restart_impl_test.cc.
 TEST(RawStatDataTest, HeapAlloc) {
-  HeapRawStatDataAllocator alloc;
-  RawStatData* stat_1 = alloc.alloc("ref_name");
+  Stats::StatsOptionsImpl stats_options;
+  HeapStatDataAllocator alloc; //(stats_options);
+  HeapStatData* stat_1 = alloc.alloc("ref_name");
   ASSERT_NE(stat_1, nullptr);
-  RawStatData* stat_2 = alloc.alloc("ref_name");
+  HeapStatData* stat_2 = alloc.alloc("ref_name");
   ASSERT_NE(stat_2, nullptr);
-  RawStatData* stat_3 = alloc.alloc("not_ref_name");
+  HeapStatData* stat_3 = alloc.alloc("not_ref_name");
   ASSERT_NE(stat_3, nullptr);
   EXPECT_EQ(stat_1, stat_2);
   EXPECT_NE(stat_1, stat_3);

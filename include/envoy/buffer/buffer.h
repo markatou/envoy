@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 
+#include "envoy/api/os_sys_calls.h"
 #include "envoy/common/pure.h"
 
 namespace Envoy {
@@ -142,9 +143,10 @@ public:
    * Read from a file descriptor directly into the buffer.
    * @param fd supplies the descriptor to read from.
    * @param max_length supplies the maximum length to read.
-   * @return the number of bytes read or -1 if there was an error.
+   * @return a Api::SysCallResult with rc_ = the number of bytes read if successful, or rc_ = -1
+   *   for failure. If the call is successful, errno_ shouldn't be used.
    */
-  virtual int read(int fd, uint64_t max_length) PURE;
+  virtual Api::SysCallResult read(int fd, uint64_t max_length) PURE;
 
   /**
    * Reserve space in the buffer.
@@ -165,11 +167,18 @@ public:
   virtual ssize_t search(const void* data, uint64_t size, size_t start) const PURE;
 
   /**
+   * Constructs a flattened string from a buffer.
+   * @return the flattened string.
+   */
+  virtual std::string toString() const PURE;
+
+  /**
    * Write the buffer out to a file descriptor.
    * @param fd supplies the descriptor to write to.
-   * @return the number of bytes written or -1 if there was an error.
+   * @return a Api::SysCallResult with rc_ = the number of bytes written if successful, or rc_ = -1
+   *   for failure. If the call is successful, errno_ shouldn't be used.
    */
-  virtual int write(int fd) PURE;
+  virtual Api::SysCallResult write(int fd) PURE;
 };
 
 typedef std::unique_ptr<Instance> InstancePtr;

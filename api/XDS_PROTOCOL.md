@@ -147,7 +147,7 @@ management server will provide the complete state of the LDS/CDS resources in
 each response. An absent `Listener` or `Cluster` will be deleted.
 
 For EDS/RDS, the management server does not need to supply every requested
-resource and may also supply additional, unrequested resources, `resource_names`
+resource and may also supply additional, unrequested resources. `resource_names`
 is only a hint. Envoy will silently ignore any superfluous resources. When a
 requested resource is missing in a RDS or EDS update, Envoy will retain the last
 known value for this resource. The management server may be able to infer all
@@ -166,7 +166,7 @@ For EDS/RDS, Envoy may either generate a distinct stream for each resource of a
 given type (e.g. if each `ConfigSource` has its own distinct upstream cluster
 for a management server), or may combine together multiple resource requests for
 a given resource type when they are destined for the same management server.
-This is left to implementation specifics, management servers should be capable
+While this is left to implementation specifics, management servers should be capable
 of handling one or more `resource_names` for a given resource type in each
 request. Both sequence diagrams below are valid for fetching two EDS resources
 `{foo, bar}`:
@@ -284,6 +284,51 @@ admin:
   ...
 
 ```
+
+### Incremental xDS
+
+Incremental xDS is a separate xDS endpoint available for ADS, CDS and RDS that
+allows:
+
+  * Incremental updates of the list of tracked resources by the xDS client.
+    This supports Envoy on-demand / lazily requesting additional resources. For
+    example, this may occur when a request corresponding to an unknown cluster
+    arrives.
+  * The xDS server can incremetally update the resources on the client.
+    This supports the goal of scalability of xDS resources. Rather than deliver
+    all 100k clusters when a single cluster is modified, the management server
+    only needs to deliver the single cluster that changed.
+
+An xDS incremental session is always in the context of a gRPC bidirectional
+stream. This allows the xDS server to keep track of the state of xDS clients
+connected to it. There is no REST version of Incremental xDS.
+
+In incremental xDS the nonce field is required and used to pair a
+[`IncrementalDiscoveryResponse`](https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/discovery.proto#discoveryrequest)
+to a [`IncrementalDiscoveryRequest`](https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/discovery.proto#discoveryrequest)
+ACK or NACK.
+Optionally, a response message level system_version_info is present for
+debugging purposes only.
+
+`IncrementalDiscoveryRequest` can be sent in 3 situations:
+  1. Initial message in a xDS bidirectional gRPC stream.
+  2. As an ACK or NACK response to a previous `IncrementalDiscoveryResponse`.
+     In this case the `response_nonce` is set to the nonce value in the Response.
+     ACK or NACK is determined by the absence or presence of `error_detail`.
+  3. Spontaneous `IncrementalDiscoveryRequest` from the client.
+     This can be done to dynamically add or remove elements from the tracked
+     `resource_names` set. In this case `response_nonce` must be omitted.
+
+In this first example the client connects and receives a first update that it
+ACKs. The second update fails and the client NACKs the update. Later the xDS
+client spontaneously requests the "wc" resource.
+
+![Incremental session example](diagrams/incremental.svg)
+
+On reconnect the xDS Incremental client may tell the server of its known resources
+to avoid resending them over the network.
+
+![Incremental reconnect example](diagrams/incremental-reconnect.svg)
 
 ## REST-JSON polling subscriptions
 

@@ -163,7 +163,7 @@ public:
  */
 class ThreadLocalStoreImpl : Logger::Loggable<Logger::Id::stats>, public StoreRoot {
 public:
-  ThreadLocalStoreImpl(StatDataAllocator& alloc);
+  ThreadLocalStoreImpl(const Stats::StatsOptions& stats_options, StatDataAllocator& alloc);
   ~ThreadLocalStoreImpl();
 
   // Stats::Scope
@@ -195,6 +195,8 @@ public:
 
   Source& source() override { return source_; }
 
+  const Stats::StatsOptions& statsOptions() const override { return stats_options_; }
+
 private:
   struct TlsCacheEntry {
     std::unordered_map<std::string, CounterSharedPtr> counters_;
@@ -224,10 +226,11 @@ private:
     Gauge& gauge(const std::string& name) override;
     Histogram& histogram(const std::string& name) override;
     Histogram& tlsHistogram(const std::string& name, ParentHistogramImpl& parent) override;
+    const Stats::StatsOptions& statsOptions() const override { return parent_.statsOptions(); }
 
     template <class StatType>
     using MakeStatFn =
-        std::function<std::shared_ptr<StatType>(StatDataAllocator&, const std::string& name,
+        std::function<std::shared_ptr<StatType>(StatDataAllocator&, absl::string_view name,
                                                 std::string&& tag_extracted_name,
                                                 std::vector<Tag>&& tags)>;
 
@@ -271,7 +274,9 @@ private:
   void clearScopeFromCaches(uint64_t scope_id);
   void releaseScopeCrossThread(ScopeImpl* scope);
   void mergeInternal(PostMergeCb mergeCb);
+  absl::string_view truncateStatNameIfNeeded(absl::string_view name);
 
+  const Stats::StatsOptions& stats_options_;
   StatDataAllocator& alloc_;
   Event::Dispatcher* main_thread_dispatcher_{};
   ThreadLocal::SlotPtr tls_;
@@ -283,7 +288,7 @@ private:
   std::atomic<bool> shutting_down_{};
   std::atomic<bool> merge_in_progress_{};
   Counter& num_last_resort_stats_;
-  HeapRawStatDataAllocator heap_allocator_;
+  HeapStatDataAllocator heap_allocator_;
   SourceImpl source_;
 };
 

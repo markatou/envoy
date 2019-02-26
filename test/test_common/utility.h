@@ -26,6 +26,8 @@
 using testing::AssertionFailure;
 using testing::AssertionResult;
 using testing::AssertionSuccess;
+using testing::Invoke;
+using testing::_;
 
 namespace Envoy {
 #define EXPECT_THROW_WITH_MESSAGE(statement, expected_exception, message)                          \
@@ -75,6 +77,14 @@ namespace Envoy {
     EXPECT_DEATH(statement, message);                                                              \
   } while (false)
 
+#define VERIFY_ASSERTION(statement)                                                                \
+  do {                                                                                             \
+    ::testing::AssertionResult status = statement;                                                 \
+    if (!status) {                                                                                 \
+      return status;                                                                               \
+    }                                                                                              \
+  } while (false)
+
 // Random number generator which logs its seed to stderr. To repeat a test run with a non-zero seed
 // one can run the test with --test_arg=--gtest_random_seed=[seed]
 class TestRandomGenerator {
@@ -97,16 +107,6 @@ public:
    * @return TRUE if the buffers are equal, false if not.
    */
   static bool buffersEqual(const Buffer::Instance& lhs, const Buffer::Instance& rhs);
-
-  /**
-   * Convert a buffer to a string.
-   * @param buffer supplies the buffer to convert.
-   * @return std::string the converted string.
-   */
-  static std::string bufferToString(const Buffer::OwnedImpl& buffer) {
-    // TODO(jmarantz): remove this indirection and update all ~53 call sites.
-    return buffer.toString();
-  }
 
   /**
    * Feed a buffer with random characters.
@@ -154,12 +154,10 @@ public:
    *
    * @param lhs proto on LHS.
    * @param rhs proto on RHS.
-   * @return bool indicating whether the protos are equal. Type name and string serialization are
-   *         used for equality testing.
+   * @return bool indicating whether the protos are equal.
    */
   static bool protoEqual(const Protobuf::Message& lhs, const Protobuf::Message& rhs) {
-    return lhs.GetTypeName() == rhs.GetTypeName() &&
-           lhs.SerializeAsString() == rhs.SerializeAsString();
+    return Protobuf::util::MessageDifferencer::Equivalent(lhs, rhs);
   }
 
   /**
@@ -275,6 +273,8 @@ public:
     }
     return result;
   }
+
+  static constexpr std::chrono::milliseconds DefaultTimeout = std::chrono::milliseconds(10000);
 };
 
 /**
@@ -345,19 +345,22 @@ public:
 } // namespace Http
 
 namespace Stats {
+
 /**
  * This is a heap test allocator that works similar to how the shared memory allocator works in
  * terms of reference counting, etc.
  */
 class TestAllocator : public RawStatDataAllocator {
 public:
+  TestAllocator(const StatsOptions& stats_options) : stats_options_(stats_options) {}
   ~TestAllocator() { EXPECT_TRUE(stats_.empty()); }
 
-  RawStatData* alloc(const std::string& name) override {
-    CSmartPtr<RawStatData, freeAdapter>& stat_ref = stats_[name];
+  RawStatData* alloc(absl::string_view name) override {
+    CSmartPtr<RawStatData, freeAdapter>& stat_ref = stats_[std::string(name)];
     if (!stat_ref) {
-      stat_ref.reset(static_cast<RawStatData*>(::calloc(RawStatData::size(), 1)));
-      stat_ref->initialize(name);
+      stat_ref.reset(static_cast<RawStatData*>(
+          ::calloc(RawStatData::structSizeWithOptions(stats_options_), 1)));
+      stat_ref->initialize(name, stats_options_);
     } else {
       stat_ref->ref_count_++;
     }
@@ -378,6 +381,18 @@ public:
 private:
   static void freeAdapter(RawStatData* data) { ::free(data); }
   std::unordered_map<std::string, CSmartPtr<RawStatData, freeAdapter>> stats_;
+  const StatsOptions& stats_options_;
+};
+
+class MockedTestAllocator : public RawStatDataAllocator {
+public:
+  MockedTestAllocator(const StatsOptions& stats_options);
+  virtual ~MockedTestAllocator();
+
+  MOCK_METHOD1(alloc, RawStatData*(absl::string_view name));
+  MOCK_METHOD1(free, void(RawStatData& data));
+
+  TestAllocator alloc_;
 };
 
 } // namespace Stats

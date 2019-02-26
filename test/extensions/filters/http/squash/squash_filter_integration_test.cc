@@ -22,19 +22,27 @@ public:
 
   ~SquashFilterIntegrationTest() {
     if (fake_squash_connection_) {
-      fake_squash_connection_->close();
-      fake_squash_connection_->waitForDisconnect();
+      AssertionResult result = fake_squash_connection_->close();
+      RELEASE_ASSERT(result, result.message());
+      result = fake_squash_connection_->waitForDisconnect();
+      RELEASE_ASSERT(result, result.message());
     }
   }
 
   FakeStreamPtr sendSquash(const std::string& status, const std::string& body) {
 
     if (!fake_squash_connection_) {
-      fake_squash_connection_ = fake_upstreams_[1]->waitForHttpConnection(*dispatcher_);
+      AssertionResult result =
+          fake_upstreams_[1]->waitForHttpConnection(*dispatcher_, fake_squash_connection_);
+      RELEASE_ASSERT(result, result.message());
     }
 
-    FakeStreamPtr request_stream = fake_squash_connection_->waitForNewStream(*dispatcher_);
-    request_stream->waitForEndStream(*dispatcher_);
+    FakeStreamPtr request_stream;
+    AssertionResult result =
+        fake_squash_connection_->waitForNewStream(*dispatcher_, request_stream);
+    RELEASE_ASSERT(result, result.message());
+    result = request_stream->waitForEndStream(*dispatcher_);
+    RELEASE_ASSERT(result, result.message());
     if (body.empty()) {
       request_stream->encodeHeaders(Http::TestHeaderMapImpl{{":status", status}}, true);
     } else {
@@ -127,7 +135,7 @@ TEST_P(SquashFilterIntegrationTest, TestHappyPath) {
   EXPECT_STREQ("/api/v2/debugattachment/", create_stream->headers().Path()->value().c_str());
   // Make sure the env var was replaced
   ProtobufWkt::Struct actualbody;
-  MessageUtil::loadFromJson(TestUtility::bufferToString(create_stream->body()), actualbody);
+  MessageUtil::loadFromJson(create_stream->body().toString(), actualbody);
 
   ProtobufWkt::Struct expectedbody;
   MessageUtil::loadFromJson("{\"spec\": { \"attachment\" : { \"env\": \"" ENV_VAR_VALUE

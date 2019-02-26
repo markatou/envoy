@@ -152,9 +152,23 @@ envoy_cc_library(
     deps = [
         "//include/envoy/network:address_interface",
         "//include/envoy/server:options_interface",
+        "//include/envoy/stats:stats_interface",
         "//source/common/common:macros",
         "//source/common/common:version_lib",
         "//source/common/stats:stats_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "overload_manager_lib",
+    srcs = ["overload_manager_impl.cc"],
+    hdrs = ["overload_manager_impl.h"],
+    deps = [
+        "//include/envoy/server:overload_manager_interface",
+        "//source/common/common:logger_lib",
+        "//source/common/config:utility_lib",
+        "//source/server:resource_monitor_config_lib",
+        "@envoy_api//envoy/config/overload/v2alpha:overload_cc",
     ],
 )
 
@@ -208,6 +222,8 @@ envoy_cc_library(
         "//source/common/api:os_sys_calls_lib",
         "//source/common/common:empty_string",
         "//source/common/config:utility_lib",
+        "//source/common/network:cidr_range_lib",
+        "//source/common/network:lc_trie_lib",
         "//source/common/network:listen_socket_lib",
         "//source/common/network:resolver_lib",
         "//source/common/network:socket_option_factory_lib",
@@ -238,6 +254,14 @@ envoy_cc_library(
         "@envoy_api//envoy/service/discovery/v2:hds_cc",
         "@envoy_api//envoy/service/metrics/v2:metrics_service_cc",
         "@envoy_api//envoy/service/ratelimit/v2:rls_cc",
+    ],
+)
+
+envoy_cc_library(
+    name = "resource_monitor_config_lib",
+    hdrs = ["resource_monitor_config_impl.h"],
+    deps = [
+        "//include/envoy/server:resource_monitor_config_interface",
     ],
 )
 

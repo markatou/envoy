@@ -31,6 +31,10 @@ service ClusterDiscoveryService {
   rpc StreamClusters(stream DiscoveryRequest) returns (stream DiscoveryResponse) {
   }
 
+  rpc IncrementalClusters(stream IncrementalDiscoveryRequest)
+      returns (stream IncrementalDiscoveryResponse) {
+  }
+
   rpc FetchClusters(DiscoveryRequest) returns (DiscoveryResponse) {
     option (google.api.http) = {
       post: "/v2/discovery:clusters"
@@ -156,7 +160,13 @@ message Cluster {
   // :ref:`STRICT_DNS<envoy_api_enum_value_Cluster.DiscoveryType.STRICT_DNS>`
   // or :ref:`LOGICAL_DNS<envoy_api_enum_value_Cluster.DiscoveryType.LOGICAL_DNS>`,
   // then hosts is required.
-  repeated core.Address hosts = 7;
+  //
+  // .. attention::
+  //
+  //   **This field is deprecated**. Set the
+  //   :ref:`load_assignment<envoy_api_field_Cluster.load_assignment>` field instead.
+  //
+  repeated core.Address hosts = 7 [deprecated = true];
 
   // Setting this is required for specifying members of
   // :ref:`STATIC<envoy_api_enum_value_Cluster.DiscoveryType.STATIC>`,
@@ -172,7 +182,6 @@ message Cluster {
   //   :ref:`endpoint assignments<envoy_api_msg_ClusterLoadAssignment>`.
   //   Setting this overrides :ref:`hosts<envoy_api_field_Cluster.hosts>` values.
   //
-  // [#not-implemented-hide:]
   ClusterLoadAssignment load_assignment = 33;
 
   // Optional :ref:`active health checking <arch_overview_health_checking>`
@@ -341,6 +350,18 @@ message Cluster {
     // weighted cluster contains the same keys and values as the subset's
     // metadata. The same host may appear in multiple subsets.
     repeated LbSubsetSelector subset_selectors = 3;
+
+    // If true, routing to subsets will take into account the localities and locality weights of the
+    // endpoints when making the routing decision.
+    //
+    // There are some potential pitfalls associated with enabling this feature, as the resulting
+    // traffic split after applying both a subset match and locality weights might be undesirable.
+    //
+    // Consider for example a situation in which you have 50/50 split across two localities X/Y
+    // which have 100 hosts each without subsetting. If the subset LB results in X having only 1
+    // host selected but Y having 100, then a lot more load is being dumped on the single host in X
+    // than originally anticipated in the load balancing assignment delivered via EDS.
+    bool locality_weight_aware = 4;
   }
 
   // Configuration for load balancing subsetting.
@@ -416,6 +437,17 @@ message Cluster {
       ZoneAwareLbConfig zone_aware_lb_config = 2;
       LocalityWeightedLbConfig locality_weighted_lb_config = 3;
     }
+    // If set, all health check/weight/metadata updates that happen within this duration will be
+    // merged and delivered in one shot when the duration expires. The start of the duration is when
+    // the first update happens. This is useful for big clusters, with potentially noisy deploys
+    // that might trigger excessive CPU usage due to a constant stream of healthcheck state changes
+    // or metadata updates. By default, this is not configured and updates apply immediately. Also,
+    // the first set of updates to be seen apply immediately as well (e.g.: a new cluster).
+    //
+    // Note: merging does not apply to cluster membership changes (e.g.: adds/removes); this is
+    // because merging those updates isn't currently safe. See
+    // https://github.com/envoyproxy/envoy/pull/3941.
+    google.protobuf.Duration update_merge_window = 4;
   }
 
   // Common configuration for all load balancer implementations.

@@ -16,7 +16,7 @@ public:
   MockBufferBase();
   MockBufferBase(std::function<void()> below_low, std::function<void()> above_high);
 
-  MOCK_METHOD1(write, int(int fd));
+  MOCK_METHOD1(write, Api::SysCallResult(int fd));
   MOCK_METHOD1(move, void(Buffer::Instance& rhs));
   MOCK_METHOD2(move, void(Buffer::Instance& rhs, uint64_t length));
   MOCK_METHOD1(drain, void(uint64_t size));
@@ -24,12 +24,12 @@ public:
   void baseMove(Buffer::Instance& rhs) { BaseClass::move(rhs); }
   void baseDrain(uint64_t size) { BaseClass::drain(size); }
 
-  int trackWrites(int fd) {
-    int bytes_written = BaseClass::write(fd);
-    if (bytes_written > 0) {
-      bytes_written_ += bytes_written;
+  Api::SysCallResult trackWrites(int fd) {
+    Api::SysCallResult result = BaseClass::write(fd);
+    if (result.rc_ > 0) {
+      bytes_written_ += result.rc_;
     }
-    return bytes_written;
+    return result;
   }
 
   void trackDrains(uint64_t size) {
@@ -38,10 +38,7 @@ public:
   }
 
   // A convenience function to invoke on write() which fails the write with EAGAIN.
-  int failWrite(int) {
-    errno = EAGAIN;
-    return -1;
-  }
+  Api::SysCallResult failWrite(int) { return {-1, EAGAIN}; }
 
   int bytes_written() const { return bytes_written_; }
   uint64_t bytes_drained() const { return bytes_drained_; }
@@ -99,19 +96,20 @@ MATCHER_P(BufferEqual, rhs, testing::PrintToString(*rhs)) {
 }
 
 MATCHER_P(BufferStringEqual, rhs, rhs) {
-  *result_listener << "\"" << TestUtility::bufferToString(arg) << "\"";
+  *result_listener << "\"" << arg.toString() << "\"";
 
   Buffer::OwnedImpl buffer(rhs);
   return TestUtility::buffersEqual(arg, buffer);
 }
 
 ACTION_P(AddBufferToString, target_string) {
-  target_string->append(TestUtility::bufferToString(arg0));
+  auto bufferToString = [](const Buffer::OwnedImpl& buf) -> std::string { return buf.toString(); };
+  target_string->append(bufferToString(arg0));
   arg0.drain(arg0.length());
 }
 
 ACTION_P(AddBufferToStringWithoutDraining, target_string) {
-  target_string->append(TestUtility::bufferToString(arg0));
+  target_string->append(arg0.toString());
 }
 
 } // namespace Envoy

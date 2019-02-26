@@ -7,6 +7,8 @@
 #include "common/http/message_impl.h"
 #include "common/json/json_loader.h"
 #include "common/profiler/profiler.h"
+#include "common/protobuf/protobuf.h"
+#include "common/protobuf/utility.h"
 #include "common/stats/stats_impl.h"
 #include "common/stats/thread_local_store.h"
 
@@ -29,26 +31,18 @@ using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Ref;
+using testing::Return;
+using testing::ReturnPointee;
+using testing::ReturnRef;
 using testing::_;
 
 namespace Envoy {
 namespace Server {
 
-class AdminStatsTest : public testing::TestWithParam<Network::Address::IpVersion>,
-                       public Stats::RawStatDataAllocator {
+class AdminStatsTest : public testing::TestWithParam<Network::Address::IpVersion> {
 public:
-public:
-  AdminStatsTest() {
-    ON_CALL(*this, alloc(_))
-        .WillByDefault(Invoke(
-            [this](const std::string& name) -> Stats::RawStatData* { return alloc_.alloc(name); }));
-
-    ON_CALL(*this, free(_)).WillByDefault(Invoke([this](Stats::RawStatData& data) -> void {
-      return alloc_.free(data);
-    }));
-
-    EXPECT_CALL(*this, alloc("stats.overflow"));
-    store_.reset(new Stats::ThreadLocalStoreImpl(*this));
+  AdminStatsTest() : alloc_(options_) {
+    store_ = std::make_unique<Stats::ThreadLocalStoreImpl>(options_, alloc_);
     store_->addSink(sink_);
   }
 
@@ -59,12 +53,10 @@ public:
     return AdminImpl::statsAsJson(all_stats, all_histograms, used_only, true);
   }
 
-  MOCK_METHOD1(alloc, Stats::RawStatData*(const std::string& name));
-  MOCK_METHOD1(free, void(Stats::RawStatData& data));
-
   NiceMock<Event::MockDispatcher> main_thread_dispatcher_;
   NiceMock<ThreadLocal::MockInstance> tls_;
-  Stats::TestAllocator alloc_;
+  Stats::StatsOptionsImpl options_;
+  Stats::MockedTestAllocator alloc_;
   Stats::MockSink sink_;
   std::unique_ptr<Stats::ThreadLocalStoreImpl> store_;
 };
@@ -115,7 +107,7 @@ TEST_P(AdminStatsTest, StatsAsJson) {
 
   store_->mergeHistograms([]() -> void {});
 
-  EXPECT_CALL(*this, free(_));
+  EXPECT_CALL(alloc_, free(_));
 
   std::map<std::string, uint64_t> all_stats;
 
@@ -251,7 +243,7 @@ TEST_P(AdminStatsTest, UsedOnlyStatsAsJson) {
 
   store_->mergeHistograms([]() -> void {});
 
-  EXPECT_CALL(*this, free(_));
+  EXPECT_CALL(alloc_, free(_));
 
   std::map<std::string, uint64_t> all_stats;
 
@@ -411,15 +403,15 @@ TEST_P(AdminInstanceTest, AdminProfiler) {
 
 #endif
 
-TEST_P(AdminInstanceTest, MutatesWarnWithGet) {
+TEST_P(AdminInstanceTest, MutatesErrorWithGet) {
   Buffer::OwnedImpl data;
   Http::HeaderMapImpl header_map;
   const std::string path("/healthcheck/fail");
   // TODO(jmarantz): the call to getCallback should be made to fail, but as an interim we will
   // just issue a warning, so that scripts using curl GET comamnds to mutate state can be fixed.
-  EXPECT_LOG_CONTAINS("warning",
+  EXPECT_LOG_CONTAINS("error",
                       "admin path \"" + path + "\" mutates state, method=GET rather than POST",
-                      EXPECT_EQ(Http::Code::OK, getCallback(path, header_map, data)));
+                      EXPECT_EQ(Http::Code::BadRequest, getCallback(path, header_map, data)));
 }
 
 TEST_P(AdminInstanceTest, AdminBadProfiler) {
@@ -549,7 +541,7 @@ TEST_P(AdminInstanceTest, ConfigDump) {
 }
 )EOF";
   EXPECT_EQ(Http::Code::OK, getCallback("/config_dump", header_map, response));
-  std::string output = TestUtility::bufferToString(response);
+  std::string output = response.toString();
   EXPECT_EQ(expected_json, output);
 }
 
@@ -616,7 +608,7 @@ TEST_P(AdminInstanceTest, Runtime) {
   EXPECT_CALL(loader, snapshot()).WillRepeatedly(testing::ReturnPointee(&snapshot));
   EXPECT_CALL(server_, runtime()).WillRepeatedly(testing::ReturnPointee(&loader));
   EXPECT_EQ(Http::Code::OK, getCallback("/runtime", header_map, response));
-  EXPECT_EQ(expected_json, TestUtility::bufferToString(response));
+  EXPECT_EQ(expected_json, response.toString());
 }
 
 TEST_P(AdminInstanceTest, RuntimeModify) {
@@ -632,16 +624,16 @@ TEST_P(AdminInstanceTest, RuntimeModify) {
   overrides["nothing"] = "";
   EXPECT_CALL(loader, mergeValues(overrides)).Times(1);
   EXPECT_EQ(Http::Code::OK,
-            getCallback("/runtime_modify?foo=bar&x=42&nothing=", header_map, response));
-  EXPECT_EQ("OK\n", TestUtility::bufferToString(response));
+            postCallback("/runtime_modify?foo=bar&x=42&nothing=", header_map, response));
+  EXPECT_EQ("OK\n", response.toString());
 }
 
 TEST_P(AdminInstanceTest, RuntimeModifyNoArguments) {
   Http::HeaderMapImpl header_map;
   Buffer::OwnedImpl response;
 
-  EXPECT_EQ(Http::Code::BadRequest, getCallback("/runtime_modify", header_map, response));
-  EXPECT_TRUE(absl::StartsWith(TestUtility::bufferToString(response), "usage:"));
+  EXPECT_EQ(Http::Code::BadRequest, postCallback("/runtime_modify", header_map, response));
+  EXPECT_TRUE(absl::StartsWith(response.toString(), "usage:"));
 }
 
 TEST_P(AdminInstanceTest, TracingStatsDisabled) {
@@ -649,6 +641,110 @@ TEST_P(AdminInstanceTest, TracingStatsDisabled) {
   for (Stats::CounterSharedPtr counter : server_.stats().counters()) {
     EXPECT_NE(counter->name(), name) << "Unexpected tracing stat found in server stats: " << name;
   }
+}
+
+TEST_P(AdminInstanceTest, ClustersJson) {
+  Upstream::ClusterManager::ClusterInfoMap cluster_map;
+  ON_CALL(server_.cluster_manager_, clusters()).WillByDefault(ReturnPointee(&cluster_map));
+
+  NiceMock<Upstream::MockCluster> cluster;
+  cluster_map.emplace(cluster.info_->name_, cluster);
+
+  NiceMock<Upstream::Outlier::MockDetector> outlier_detector;
+  ON_CALL(Const(cluster), outlierDetector()).WillByDefault(Return(&outlier_detector));
+  ON_CALL(outlier_detector, successRateEjectionThreshold()).WillByDefault(Return(6.0));
+
+  ON_CALL(*cluster.info_, addedViaApi()).WillByDefault(Return(true));
+
+  Upstream::MockHostSet* host_set = cluster.priority_set_.getMockHostSet(0);
+  auto host = std::make_shared<NiceMock<Upstream::MockHost>>();
+
+  envoy::api::v2::core::Locality locality;
+  locality.set_region("test_region");
+  locality.set_zone("test_zone");
+  locality.set_sub_zone("test_sub_zone");
+  ON_CALL(*host, locality()).WillByDefault(ReturnRef(locality));
+
+  host_set->hosts_.emplace_back(host);
+  Network::Address::InstanceConstSharedPtr address =
+      Network::Utility::resolveUrl("tcp://1.2.3.4:80");
+  ON_CALL(*host, address()).WillByDefault(Return(address));
+
+  Stats::IsolatedStoreImpl store;
+  store.counter("test_counter").add(10);
+  store.gauge("test_gauge").set(11);
+  ON_CALL(*host, gauges()).WillByDefault(Invoke([&store]() { return store.gauges(); }));
+  ON_CALL(*host, counters()).WillByDefault(Invoke([&store]() { return store.counters(); }));
+
+  ON_CALL(*host, healthFlagGet(Upstream::Host::HealthFlag::FAILED_ACTIVE_HC))
+      .WillByDefault(Return(true));
+  ON_CALL(*host, healthFlagGet(Upstream::Host::HealthFlag::FAILED_OUTLIER_CHECK))
+      .WillByDefault(Return(true));
+  ON_CALL(*host, healthFlagGet(Upstream::Host::HealthFlag::FAILED_EDS_HEALTH))
+      .WillByDefault(Return(false));
+
+  ON_CALL(host->outlier_detector_, successRate()).WillByDefault(Return(43.2));
+
+  Buffer::OwnedImpl response;
+  Http::HeaderMapImpl header_map;
+  EXPECT_EQ(Http::Code::OK, getCallback("/clusters?format=json", header_map, response));
+  std::string output_json = response.toString();
+  envoy::admin::v2alpha::Clusters output_proto;
+  MessageUtil::loadFromJson(output_json, output_proto);
+
+  const std::string expected_json = R"EOF({
+ "cluster_statuses": [
+  {
+   "name": "fake_cluster",
+   "success_rate_ejection_threshold": {
+    "value": 6
+   },
+   "added_via_api": true,
+   "host_statuses": [
+    {
+     "address": {
+      "socket_address": {
+       "protocol": "TCP",
+       "address": "1.2.3.4",
+       "port_value": 80
+      }
+     },
+     "stats": {
+      "test_counter": {
+       "value": "10",
+       "type": "COUNTER"
+      },
+      "test_gauge": {
+       "value": "11",
+       "type": "GAUGE"
+      },
+     },
+     "health_status": {
+      "eds_health_status": "HEALTHY",
+      "failed_active_health_check": true,
+      "failed_outlier_check": true
+     },
+     "success_rate": {
+      "value": 43.2
+     }
+    }
+   ]
+  }
+ ]
+}
+)EOF";
+
+  envoy::admin::v2alpha::Clusters expected_proto;
+  MessageUtil::loadFromJson(expected_json, expected_proto);
+
+  // Ensure the protos created from each JSON are equivalent.
+  EXPECT_THAT(output_proto, ProtoEq(expected_proto));
+
+  // Ensure that the normal text format is used by default.
+  EXPECT_EQ(Http::Code::OK, getCallback("/clusters", header_map, response));
+  std::string text_output = response.toString();
+  envoy::admin::v2alpha::Clusters failed_conversion_proto;
+  EXPECT_THROW(MessageUtil::loadFromJson(text_output, failed_conversion_proto), EnvoyException);
 }
 
 TEST_P(AdminInstanceTest, GetRequest) {
@@ -685,6 +781,7 @@ TEST_P(AdminInstanceTest, PostRequest) {
 
 class PrometheusStatsFormatterTest : public testing::Test {
 protected:
+  PrometheusStatsFormatterTest() /*: alloc_(stats_options_)*/ {}
   void addCounter(const std::string& name, std::vector<Stats::Tag> cluster_tags) {
     std::string tname = std::string(name);
     counters_.push_back(alloc_.makeCounter(name, std::move(tname), std::move(cluster_tags)));
@@ -695,7 +792,8 @@ protected:
     gauges_.push_back(alloc_.makeGauge(name, std::move(tname), std::move(cluster_tags)));
   }
 
-  Stats::HeapRawStatDataAllocator alloc_;
+  Stats::StatsOptionsImpl stats_options_;
+  Stats::HeapStatDataAllocator alloc_;
   std::vector<Stats::CounterSharedPtr> counters_;
   std::vector<Stats::GaugeSharedPtr> gauges_;
 };
@@ -708,13 +806,12 @@ TEST_F(PrometheusStatsFormatterTest, MetricName) {
 }
 
 TEST_F(PrometheusStatsFormatterTest, FormattedTags) {
-  // If value has - then it should be replaced by _ .
   std::vector<Stats::Tag> tags;
   Stats::Tag tag1 = {"a.tag-name", "a.tag-value"};
-  Stats::Tag tag2 = {"another_tag_name", "another.tag-value"};
+  Stats::Tag tag2 = {"another_tag_name", "another_tag-value"};
   tags.push_back(tag1);
   tags.push_back(tag2);
-  std::string expected = "a_tag_name=\"a_tag_value\",another_tag_name=\"another_tag_value\"";
+  std::string expected = "a_tag_name=\"a.tag-value\",another_tag_name=\"another_tag-value\"";
   auto actual = PrometheusStatsFormatter::formattedTags(tags);
   EXPECT_EQ(expected, actual);
 }
